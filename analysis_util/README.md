@@ -172,6 +172,111 @@ sudo journalctl -u malla-pgloader-sync.service -n 50
 sudo journalctl -u malla-pgloader-sync.service -f
 ```
 
+## Useful PostgreSQL Queries
+
+Once your data is synced to PostgreSQL, you can run advanced analytics queries that aren't possible with SQLite.
+
+### Gateway Coverage Analysis
+
+This query analyzes packet reception across all gateways to identify coverage gaps. It shows which packets weren't received by all gateways, helping you identify dead zones or gateway issues.
+
+**First, create a helper function** (run this once):
+
+```sql
+CREATE OR REPLACE FUNCTION safe_utf8_decode(data bytea)
+RETURNS text AS $$
+BEGIN
+    RETURN convert_from(data, 'UTF8');
+EXCEPTION
+    WHEN OTHERS THEN
+        RETURN '[Encrypted/Binary]';
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+```
+
+**Then run the analysis query**:
+
+```sql
+WITH gateway_nodes AS (
+    SELECT DISTINCT ph.gateway_id, gw.short_name, gw.long_name
+    FROM packet_history ph
+    LEFT JOIN node_info gw ON gw.hex_id = ph.gateway_id
+    WHERE ph.gateway_id IS NOT NULL
+),
+packet_reception AS (
+    SELECT
+        ph.mesh_packet_id,
+        ph.from_node_id,
+        fn.short_name AS from_node_name,
+        MAX(ph.portnum_name) AS packet_type_raw,
+        MAX(CASE ph.portnum_name
+            WHEN 'TEXT_MESSAGE_APP' THEN 'Text Message'
+            WHEN 'POSITION_APP' THEN 'Position'
+            WHEN 'NODEINFO_APP' THEN 'Node Info'
+            WHEN 'TELEMETRY_APP' THEN 'Telemetry'
+            WHEN 'TRACEROUTE_APP' THEN 'Traceroute'
+            WHEN 'NEIGHBORINFO_APP' THEN 'Neighbor Info'
+            WHEN 'ROUTING_APP' THEN 'Routing'
+            ELSE ph.portnum_name
+        END) AS packet_type,
+        MAX(CASE
+            WHEN ph.portnum_name = 'TEXT_MESSAGE_APP'
+            THEN safe_utf8_decode(ph.raw_payload)
+            ELSE NULL
+        END) AS text_content,
+        COUNT(DISTINCT ph.gateway_id) AS gateway_count,
+        STRING_AGG(DISTINCT gw.short_name, ', ' ORDER BY gw.short_name) AS gateway_names,
+        MAX(ph.timestamp) AS last_timestamp,
+        MAX(ph.payload_length) AS payload_size
+    FROM packet_history ph
+    LEFT JOIN node_info fn ON fn.node_id = ph.from_node_id
+    LEFT JOIN node_info gw ON gw.hex_id = ph.gateway_id
+    WHERE ph.mesh_packet_id IS NOT NULL
+        AND ph.gateway_id IS NOT NULL
+    GROUP BY ph.mesh_packet_id, ph.from_node_id, fn.short_name
+),
+total_gateways AS (
+    SELECT COUNT(*) AS total FROM gateway_nodes
+)
+SELECT
+    pr.mesh_packet_id,
+    pr.from_node_id,
+    pr.from_node_name,
+    pr.packet_type,
+    pr.text_content,
+    pr.payload_size AS payload_bytes,
+    pr.gateway_count || '/' || tg.total AS gateway_coverage,
+    pr.gateway_names AS received_by,
+    TO_TIMESTAMP(pr.last_timestamp) AT TIME ZONE 'UTC' AS packet_time,
+    (SELECT STRING_AGG(short_name, ', ' ORDER BY short_name)
+     FROM gateway_nodes gn
+     WHERE gn.gateway_id NOT IN (
+         SELECT DISTINCT gateway_id
+         FROM packet_history
+         WHERE mesh_packet_id = pr.mesh_packet_id
+     )) AS not_received_by
+FROM packet_reception pr
+CROSS JOIN total_gateways tg
+WHERE pr.gateway_count < tg.total
+ORDER BY pr.last_timestamp DESC
+LIMIT 100;
+```
+
+**What this query shows:**
+- `mesh_packet_id` - Unique packet identifier
+- `from_node_name` - Node that sent the packet
+- `packet_type` - Type of packet (Text Message, Position, etc.)
+- `text_content` - Decoded text for text messages (encrypted messages show as `[Encrypted/Binary]`)
+- `gateway_coverage` - How many gateways received this packet (e.g., "2/3" means 2 out of 3 gateways)
+- `received_by` - Which gateways successfully received the packet
+- `not_received_by` - Which gateways did NOT receive the packet (coverage gaps)
+- `packet_time` - When the packet was sent
+
+This is particularly useful for:
+- Identifying dead zones where specific gateways consistently miss packets
+- Debugging gateway connectivity issues
+- Optimizing gateway placement for better coverage
+
 ## Docker Compose Stack
 
 The `compose.yml` file provides a complete Malla deployment with:
