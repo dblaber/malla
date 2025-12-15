@@ -26,10 +26,23 @@ class AppConfig:
 
     # Flask/server settings
     secret_key: str = "dev-secret-key-change-in-production"
-    database_file: str = "meshtastic_history.db"
     host: str = "0.0.0.0"
     port: int = 5008
     debug: bool = False
+
+    # Database settings
+    database_type: str = "sqlite"  # "sqlite" or "postgres"
+    database_file: str = "meshtastic_history.db"  # For SQLite only
+
+    # PostgreSQL connection settings (only used when database_type="postgres")
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_database: str = "malla"
+    postgres_user: str = "malla"
+    postgres_password: str = ""
+    postgres_pool_min: int = 2
+    postgres_pool_max: int = 10
+    postgres_ssl_mode: str = "prefer"  # disable, allow, prefer, require
 
     # MQTT capture settings
     mqtt_broker_address: str = "127.0.0.1"
