@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync Meshtastic SQLite to PostgreSQL
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/pgloader sqlite:///var/lib/docker/volumes/mosquitto_malla_data/_data/meshtastic_history.db postgresql://malla:REPLACEME@psql.patinhas.da4.org/malla_analyze
+User=root
+StandardOutput=journal
+StandardError=journal
